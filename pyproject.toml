@@ -1,0 +1,12 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+asyncio_mode = "auto"
+
+[project]
+name = "chatbot-rag-legal"
+version = "1.0.0"
+description = "AI Chatbot RAG - Luật Hôn nhân & Kinh tế Việt Nam"
+requires-python = ">=3.11"

@@ -1,0 +1,117 @@
+# ===========================================
+# AI CHATBOT RAG - CẤU HÌNH HỆ THỐNG
+# ===========================================
+
+app:
+  name: "Chatbot Luật Việt Nam"
+  version: "1.0.0"
+  description: "AI Chatbot RAG chuyên về Luật Hôn nhân & Gia đình và Luật Kinh tế"
+
+# --- PDF Processing ---
+pdf_processing:
+  raw_pdf_dir: "./data/raw_pdfs"
+  processed_dir: "./data/processed"
+  # Regex patterns nhận dạng cấu trúc luật Việt Nam
+  legal_patterns:
+    part: "^PHẦN THỨ\\s+(NHẤT|HAI|BA|BỐN|NĂM|SÁU|BẢY|TÁM|CHÍN|MƯỜI)"
+    chapter: "^Chương\\s+[IVXLCDM]+"
+    section: "^Mục\\s+\\d+"
+    article: "^Điều\\s+\\d+\\."
+    clause: "^\\d+\\.\\s+"
+    point: "^[a-zđ]\\)\\s+"
+
+# --- Chunking ---
+chunking:
+  strategy: "hierarchical_legal"
+  chunk_size: 512          # tokens tối đa mỗi chunk
+  chunk_overlap: 100       # tokens chồng lấn
+  min_chunk_size: 100      # tránh chunk quá nhỏ
+  preserve_article_boundary: true
+  include_parent_context: true
+  separator: "\n"
+
+# --- Embedding ---
+embedding:
+  model: "intfloat/multilingual-e5-large"
+  dimension: 1024
+  normalize: true
+  batch_size: 32
+  max_length: 512
+  query_prefix: "query: "
+  passage_prefix: "passage: "
+
+# --- Vector Store ---
+vector_store:
+  type: "chromadb"
+  persist_directory: "./vectorstore"
+  collection_name: "legal_documents"
+  distance_metric: "cosine"
+
+# --- Retrieval ---
+retrieval:
+  # Dense search (vector)
+  dense_top_k: 15
+  # Sparse search (BM25)
+  sparse_top_k: 15
+  # Sau khi fusion
+  fusion_top_k: 20
+  # Sau khi rerank
+  rerank_top_k: 5
+  # Ngưỡng relevance
+  relevance_threshold: 0.3
+  # RRF parameter
+  rrf_k: 60
+
+# --- Reranker ---
+reranker:
+  model: "BAAI/bge-reranker-v2-m3"
+  batch_size: 16
+  max_length: 512
+
+# --- LLM ---
+llm:
+  provider: "google"       # google / openai / local
+  model: "gemini-2.0-flash"
+  temperature: 0.1         # Thấp để tăng độ chính xác
+  max_tokens: 2048
+  top_p: 0.9
+  streaming: true
+
+# --- Validation (Anti-Hallucination) ---
+validation:
+  enable_citation_check: true
+  enable_faithfulness_check: true
+  enable_confidence_score: true
+  faithfulness_threshold: 7   # /10
+  confidence_threshold: 0.5
+  # LLM-as-Judge model (có thể dùng model khác)
+  judge_model: "gemini-2.0-flash"
+
+# --- Database (PostgreSQL) ---
+database:
+  driver: "postgresql+asyncpg"
+  host: "postgres"         # Docker service name
+  port: 5432
+  user: "chatbot_user"
+  password: "chatbot_pass_2026"
+  name: "chatbot_rag"
+  # Hoặc dùng DATABASE_URL từ .env
+  pool_size: 10
+  max_overflow: 20
+
+# --- API ---
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://localhost:5173"
+  rate_limit: 30           # requests per minute
+  max_session_history: 20  # lịch sử chat tối đa
+
+# --- Logging ---
+logging:
+  level: "INFO"
+  log_dir: "./logs"
+  log_queries: true
+  log_retrievals: true
