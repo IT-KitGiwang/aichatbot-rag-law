@@ -1,0 +1,24 @@
+[
+    {
+        "question": "Điều kiện kết hôn theo Luật HNGĐ 2014 là gì?",
+        "expected_articles": [
+            "Điều 8"
+        ],
+        "category": "specific_article"
+    },
+    {
+        "question": "Tài sản chung của vợ chồng bao gồm những gì?",
+        "expected_articles": [
+            "Điều 33"
+        ],
+        "category": "concept"
+    },
+    {
+        "question": "Thủ tục ly hôn đơn phương diễn ra thế nào vậy ạ nhờ admin trả lời?",
+        "expected_articles": [
+            "Điều 56",
+            "Điều 57"
+        ],
+        "category": "procedure"
+    }
+]
