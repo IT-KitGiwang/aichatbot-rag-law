@@ -6,5 +6,6 @@ abc
 
 #START LTP
 AODASODAPODA
+ấ
 
 #END LTP
