@@ -30,15 +30,13 @@ chunking:
   include_parent_context: true
   separator: "\n"
 
-# --- Embedding ---
+# --- Embedding (Google API) ---
 embedding:
-  model: "intfloat/multilingual-e5-large"
-  dimension: 1024
-  normalize: true
-  batch_size: 32
-  max_length: 512
-  query_prefix: "query: "
-  passage_prefix: "passage: "
+  model: "models/gemini-embedding-001"
+  dimension: 768
+  provider: "google"           # google API thay vì local
+  batch_size: 100
+  max_length: 2048
 
 # --- Vector Store ---
 vector_store:

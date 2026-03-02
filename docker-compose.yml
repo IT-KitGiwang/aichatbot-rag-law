@@ -7,6 +7,11 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    environment:
+      # Giới hạn threads PyTorch/MKL để giảm RAM
+      - OMP_NUM_THREADS=2
+      - MKL_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
     volumes:
       - ./vectorstore:/app/vectorstore
       - ./data:/app/data
@@ -15,6 +20,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
     restart: unless-stopped
 
   # === FRONTEND (React + Vite) ===
