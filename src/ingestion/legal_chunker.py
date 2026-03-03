@@ -73,7 +73,7 @@ class LegalChunk:
     hierarchy_path: str = ""         # "Chương III > Mục 1 > Điều 15"
 
     # --- Parent-Child ---
-    is_parent: bool = False          # True = parent chunk (toàn Điều)
+    is_parent: bool = False          # True = parent chunk (toàn Điều), False = child chunk (khoản/điểm)
     parent_chunk_id: Optional[str] = None  # None nếu là parent hoặc chunk đơn
 
     # --- Thống kê ---
@@ -105,7 +105,7 @@ class LegalChunk:
             "article_title":    self.article_title,
             "hierarchy_path":   self.hierarchy_path,
             "is_parent":        self.is_parent,
-            "parent_chunk_id":  self.parent_chunk_id or "",  # None → ""
+            "parent_chunk_id":  self.parent_chunk_id or "", 
             "token_count":      self.token_count,
         }
 
@@ -159,7 +159,7 @@ def _build_context_prefix(struct: LegalStructure) -> str:
 
     if struct.article:
         # "Điều 15. Quyền và nghĩa vụ..." → chỉ lấy "Điều 15."
-        article_short = struct.article.split()[0:2]  # ["Điều", "15."]
+        article_short = struct.article.split()[0:2] # ["Điều", "15."]
         parts.append(" ".join(article_short))
 
     return " | ".join(parts)  # "Chương III | Mục 1 | Điều 15."
@@ -168,8 +168,6 @@ def _build_context_prefix(struct: LegalStructure) -> str:
 # ===========================================================================
 # BƯỚC 2.3 — LegalChunker class & _process_article()
 # ===========================================================================
-
-from dataclasses import dataclass
 
 @dataclass
 class LegalChunker:
@@ -218,7 +216,7 @@ class LegalChunker:
         full_content = "\n".join(all_texts)
 
         # Text của parent = prefix + toàn bộ nội dung Điều
-        parent_text = f"{prefix}\n{full_content}".strip() if prefix else full_content
+        parent_text = f"{prefix}\n{full_content}".strip() if prefix else full_content # Kiểm tra (nếu prefix rỗng, không thêm dòng mới và ngược lại)
 
         # ── Bước 2: Tính token count ─────────────────────────────────────
         parent_tokens = _approx_token_count(parent_text)
@@ -229,9 +227,8 @@ class LegalChunker:
         # ── Bước 3a: Điều ngắn → 1 chunk đơn ───────────────────────────
         if parent_tokens <= self.chunk_size:
             # Không cần chia — 1 chunk là đủ, không có parent/child
-            if parent_tokens < self.min_chunk_size:
-                return []  # Quá ngắn, bỏ qua
-
+            # Lưu ý: KHÔNG bỏ qua dù token ít — một Điều luật dù ngắn
+            # vẫn có giá trị pháp lý đầy đủ (ví dụ: điều khoản hiệu lực)
             return [LegalChunk(
                 chunk_id=str(uuid.uuid4()),
                 text=parent_text,
