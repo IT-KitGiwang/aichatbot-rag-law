@@ -3,13 +3,16 @@
 Embedding Generator — 4.1.3 trong kế hoạch.
 Chuyển đổi: list[LegalChunk] → list[vector]
 
-Model: intfloat/multilingual-e5-large
-  - Hỗ trợ tiếng Việt tốt (multilingual)
-  - Dimension: 1024
-  - Yêu cầu prefix: "passage: " cho văn bản, "query: " cho câu hỏi
+Provider: Voyage AI
+Model mặc định: voyage-3-large
+    - Embedding API cloud, không phụ thuộc GPU local
+    - Dimension mặc định: 1024
 """
 
 from __future__ import annotations
+
+import os
+import time
 
 from src.ingestion.legal_chunker import LegalChunk
 
@@ -20,13 +23,13 @@ from src.ingestion.legal_chunker import LegalChunk
 
 # Cấu hình mặc định — đồng bộ với config.yaml
 _DEFAULT_CONFIG = {
-    "model":           "intfloat/multilingual-e5-large",
+    "provider":        "voyageai",
+    "model":           "voyage-law-2",
     "dimension":       1024,
-    "normalize":       True,    # L2 normalize — QUAN TRỌNG cho cosine similarity
+    "api_key_env":     "VOYAGE_API_KEY",
     "batch_size":      32,
-    "max_length":      512,
-    "query_prefix":    "query: ",    # Prefix cho câu hỏi của user
-    "passage_prefix":  "passage: ",  # Prefix cho đoạn văn bản luật
+    "max_retries":     3,
+    "retry_backoff_s": 1.5,
 }
 
 
@@ -34,25 +37,21 @@ class EmbeddingGenerator:
     """
     Tạo vector embedding cho LegalChunk và câu hỏi của user.
 
-    Singleton pattern: model chỉ được load MỘT LẦN duy nhất,
-    mọi instance dùng chung (tránh load lại ~1.2GB mỗi lần gọi).
-
-    Lazy loading: model chỉ load khi thực sự cần embed,
-    không load ngay khi khởi tạo object.
+    Client được khởi tạo theo lazy loading, dùng chung giữa các instance
+    để tránh tạo lại kết nối nhiều lần.
 
     Cách dùng:
         embedder = EmbeddingGenerator()
 
-        # Embed văn bản (dùng "passage: " prefix)
+        # Embed văn bản
         vectors = embedder.embed_chunks(chunks)   # list[list[float]]
 
-        # Embed câu hỏi (dùng "query: " prefix)
+        # Embed câu hỏi
         q_vec   = embedder.embed_query("Điều kiện ly hôn là gì?")  # list[float]
     """
 
-    # Class variable: dùng chung cho tất cả instance
-    # None = chưa load, SentenceTransformer = đã load
-    _model = None
+    # Dùng chung client cho mọi instance
+    _client = None
 
     def __init__(self, config: dict | None = None):
         """
@@ -63,101 +62,95 @@ class EmbeddingGenerator:
         """
         cfg = {**_DEFAULT_CONFIG, **(config or {})}
 
+        self.provider        = cfg["provider"]
         self.model_name      = cfg["model"]
         self.dimension       = cfg["dimension"]
-        self.normalize       = cfg["normalize"]
+        self.api_key_env     = cfg["api_key_env"]
         self.batch_size      = cfg["batch_size"]
-        self.max_length      = cfg["max_length"]
-        self.query_prefix    = cfg["query_prefix"]
-        self.passage_prefix  = cfg["passage_prefix"]
+        self.max_retries     = cfg["max_retries"]
+        self.retry_backoff_s = cfg["retry_backoff_s"]
+
+        if self.provider.lower() != "voyageai":
+            raise ValueError("Hiện tại chỉ hỗ trợ provider='voyageai'.")
 
     # ------------------------------------------------------------------
-    # Lazy load model — chỉ chạy lần đầu tiên gọi _get_model()
+    # Lazy load Voyage client — chỉ chạy lần đầu tiên gọi _get_client()
     # ------------------------------------------------------------------
 
-    def _get_model(self):
+    def _get_client(self):
         """
-        Trả về model SentenceTransformer.
-        Nếu chưa load → load lần đầu và lưu vào class variable.
-        Nếu đã load rồi → trả về ngay, không load lại.
-
-        Dùng class variable EmbeddingGenerator._model (không phải self._model)
-        để đảm bảo tất cả instance dùng chung 1 model.
+        Trả về Voyage client.
+        Nếu chưa tạo → khởi tạo lần đầu và lưu vào class variable.
+        Nếu đã có rồi → trả về ngay.
         """
-        if EmbeddingGenerator._model is None:
+        if EmbeddingGenerator._client is None:
             try:
-                from sentence_transformers import SentenceTransformer
+                import voyageai
             except ImportError:
                 raise ImportError(
-                    "Thiếu thư viện. Chạy: pip install sentence-transformers"
+                    "Thiếu thư viện. Chạy: pip install voyageai"
                 )
 
-            device = self._get_device()
-            print(f"[EmbeddingGenerator] Đang load model '{self.model_name}' trên {device}...")
+            api_key = os.getenv(self.api_key_env, "")
+            if not api_key:
+                raise ValueError(
+                    f"Thiếu API key. Hãy set biến môi trường '{self.api_key_env}'."
+                )
 
-            EmbeddingGenerator._model = SentenceTransformer(
-                self.model_name,
-                device=device,
+            EmbeddingGenerator._client = voyageai.Client(api_key=api_key)
+            print(
+                f"[EmbeddingGenerator] Voyage client sẵn sàng | "
+                f"model='{self.model_name}' | dimension={self.dimension}"
             )
-            print(f"[EmbeddingGenerator] Model sẵn sàng. Dimension: {self.dimension}")
 
-        return EmbeddingGenerator._model
-
-    @staticmethod
-    def _get_device() -> str:
-        """
-        Tự động chọn thiết bị tính toán:
-          - "cuda"  nếu có GPU (NVIDIA)
-          - "mps"   nếu có Apple Silicon GPU
-          - "cpu"   fallback
-
-        GPU nhanh hơn CPU ~10-50x cho embedding.
-        """
-        try:
-            import torch
-            if torch.cuda.is_available():
-                return "cuda"
-            if torch.backends.mps.is_available():
-                return "mps"
-        except ImportError:
-            pass
-        return "cpu"
+        return EmbeddingGenerator._client
 
     # ==================================================================
     # BƯỚC 3.2 — Encode batch & Public API
     # ==================================================================
 
-    def _encode_batch(self, texts: list[str]) -> list[list[float]]:
+    def _encode_batch(self, texts: list[str], input_type: str) -> list[list[float]]:
         """
-        Encode danh sách text thành vectors, chia thành batch nhỏ.
+        Encode danh sách text thành vectors qua Voyage API, chia thành batch nhỏ.
 
-        Chia batch để tránh tràn VRAM/RAM khi có nhiều chunks.
+        Chia batch để tránh request quá lớn khi có nhiều chunks.
         Ví dụ: 300 texts, batch_size=32 → 10 lần encode.
 
         Args:
-            texts: Danh sách text đã có prefix ("passage: ..." hoặc "query: ...")
+            texts: Danh sách text đầu vào.
+            input_type: "document" hoặc "query".
 
         Returns:
             list[list[float]] — mỗi phần tử là vector dim=1024,
             thứ tự tương ứng 1-1 với input texts.
         """
-        model = self._get_model()
+        client = self._get_client()
         all_vectors: list[list[float]] = []
 
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]
 
-            # model.encode() trả về numpy.ndarray shape (batch, 1024)
-            vectors = model.encode(
-                batch,
-                normalize_embeddings=self.normalize,  # L2 normalize
-                batch_size=len(batch),
-                show_progress_bar=False,
-                convert_to_numpy=True,
-            )
-
-            # Chuyển numpy array → list[list[float]] để ChromaDB/JSON dùng được
-            all_vectors.extend(vectors.tolist())
+            # Retry theo exponential backoff để giảm fail do lỗi tạm thời API/network.
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    response = client.embed(
+                        texts=batch,
+                        model=self.model_name,
+                        input_type=input_type,
+                    )
+                    vectors = response.embeddings
+                    if vectors and len(vectors[0]) != self.dimension:
+                        raise ValueError(
+                            f"Dimension mismatch: config={self.dimension}, "
+                            f"voyage={len(vectors[0])}"
+                        )
+                    all_vectors.extend(vectors)
+                    break
+                except Exception:
+                    if attempt >= self.max_retries:
+                        raise
+                    sleep_s = self.retry_backoff_s ** (attempt - 1)
+                    time.sleep(sleep_s)
 
         return all_vectors
 
@@ -168,9 +161,6 @@ class EmbeddingGenerator:
         Chỉ embed child chunks (is_parent=False) vì:
           - Child dùng để TÌM KIẾM → cần vector
           - Parent dùng để TRẢ VỀ context → chỉ cần text, không cần vector
-
-        Prefix "passage: " được thêm vào mỗi chunk text.
-        Đây là yêu cầu bắt buộc của multilingual-e5-large.
 
         Args:
             chunks: list[LegalChunk] — gồm cả parent lẫn child
@@ -193,9 +183,7 @@ class EmbeddingGenerator:
                 # Parent không cần embed — trả về vector zero làm placeholder
                 all_vectors.append([0.0] * self.dimension)
             else:
-                # Child: thêm "passage: " prefix rồi encode
-                text_with_prefix = self.passage_prefix + chunk.text
-                all_vectors.extend(self._encode_batch([text_with_prefix]))
+                all_vectors.extend(self._encode_batch([chunk.text], input_type="document"))
 
         return all_vectors
 
@@ -219,13 +207,13 @@ class EmbeddingGenerator:
         for i, chunk in enumerate(chunks):
             if not chunk.is_parent:
                 child_indices.append(i)
-                child_texts.append(self.passage_prefix + chunk.text)
+                child_texts.append(chunk.text)
 
         # Encode tất cả child trong 1 lần gọi batch
-        child_vectors = self._encode_batch(child_texts) if child_texts else []
+        child_vectors = self._encode_batch(child_texts, input_type="document") if child_texts else []
 
         # Ghép lại: parent → zero vector, child → vector thật
-        result = [[0.0] * self.dimension] * len(chunks)
+        result = [[0.0] * self.dimension for _ in chunks]
         for idx, vec in zip(child_indices, child_vectors):
             result[idx] = vec
 
@@ -235,22 +223,17 @@ class EmbeddingGenerator:
         """
         Tạo embedding cho câu hỏi của user.
 
-        Dùng prefix "query: " thay vì "passage: ".
-        Prefix khác nhau giúp model tính similarity đúng hướng
-        (câu hỏi ↔ đoạn văn bản, không phải văn bản ↔ văn bản).
-
         Args:
-            query: Câu hỏi thuần (không có prefix).
+            query: Câu hỏi của user.
                    VD: "Điều kiện để được ly hôn là gì?"
 
         Returns:
-            list[float] — vector 1024 chiều, đã L2 normalize.
+            list[float] — vector 1024 chiều.
 
         Ví dụ:
             q_vec = embedder.embed_query("Tài sản chung của vợ chồng gồm những gì?")
             # q_vec: [0.023, -0.041, ...] — 1024 số
         """
-        text_with_prefix = self.query_prefix + query.strip()
-        vectors = self._encode_batch([text_with_prefix])
+        vectors = self._encode_batch([query.strip()], input_type="query")
         return vectors[0]  # Trả về vector đơn (không phải list of lists)
 

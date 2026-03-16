@@ -66,6 +66,7 @@ class IngestionPipeline:
         self.indexer = LegalIndexer(
             persist_dir=persist_dir,
             collection_name=collection_name,
+            embedding_dim=self.embedder.dimension,
         )
 
         print("[Pipeline] Sẵn sàng.\n")
@@ -277,4 +278,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main(debug=True)
+    main()

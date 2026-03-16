@@ -27,6 +27,7 @@ chromadb>=0.6.0
 # === Embedding & Reranking ===
 sentence-transformers>=3.0.0
 torch>=2.0.0
+voyageai>=0.3.2
 
 # === PDF Processing ===
 pymupdf>=1.25.0

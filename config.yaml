@@ -32,13 +32,13 @@ chunking:
 
 # --- Embedding ---
 embedding:
-  model: "intfloat/multilingual-e5-large"
+  provider: "voyageai"
+  model: "voyage-law-2"
   dimension: 1024
-  normalize: true
+  api_key_env: "VOYAGE_API_KEY"
   batch_size: 32
-  max_length: 512
-  query_prefix: "query: "
-  passage_prefix: "passage: "
+  max_retries: 3
+  retry_backoff_s: 1.5
 
 # --- Vector Store ---
 vector_store:
