@@ -165,6 +165,60 @@ def _build_context_prefix(struct: LegalStructure) -> str:
     return " | ".join(parts)  # "Chương III | Mục 1 | Điều 15."
 
 
+def _split_text_with_overlap(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+    """
+    Cắt text thành nhiều đoạn chồng lấn theo đơn vị từ.
+
+    Mục tiêu: khi một khoản quá dài, vẫn tách được thành nhiều child chunks
+    nhưng giữ được ngữ cảnh liên tục qua overlap.
+    """
+    words = text.split()
+    if not words:
+        return []
+
+    if chunk_size <= 0:
+        return [text]
+
+    # Tránh step <= 0 gây vòng lặp vô hạn.
+    overlap = max(0, min(chunk_overlap, chunk_size - 1))
+    step = max(1, chunk_size - overlap)
+
+    segments: list[str] = []
+    for start in range(0, len(words), step):
+        end = start + chunk_size
+        segment_words = words[start:end]
+        if not segment_words:
+            break
+        segments.append(" ".join(segment_words))
+        if end >= len(words):
+            break
+
+    return segments
+
+
+def _merge_prefix_with_content(prefix: str, content: str) -> str:
+    """
+    Ghép prefix + content nhưng tránh lặp dòng đầu giống hệt prefix.
+
+    Trường hợp thường gặp: chunk standalone của "Chương I" có prefix="Chương I"
+    và content cũng bắt đầu bằng "Chương I".
+    """
+    if not prefix:
+        return content.strip()
+
+    content_stripped = content.strip()
+    if not content_stripped:
+        return prefix.strip()
+
+    first_line = content_stripped.splitlines()[0].strip()
+    normalized_first = " ".join(first_line.split()).lower()
+    normalized_prefix = " ".join(prefix.strip().split()).lower()
+    if normalized_first == normalized_prefix:
+        return content_stripped
+
+    return f"{prefix}\n{content_stripped}".strip()
+
+
 # ===========================================================================
 # BƯỚC 2.3 — LegalChunker class & _process_article()
 # ===========================================================================
@@ -174,7 +228,7 @@ class LegalChunker:
     """Chia văn bản luật thành các LegalChunk tối ưu cho RAG."""
 
     chunk_size: int = 512
-    chunk_overlap: int = 100
+    chunk_overlap: int = 0
     min_chunk_size: int = 100
     include_parent_context: bool = True
 
@@ -206,7 +260,11 @@ class LegalChunker:
                                hoặc [parent, child1, child2, ...]
         """
         struct = article_block.structure
-        law_info = getattr(article_block, "_law_info", {})
+        law_info = {
+            "law_name": article_block.law_name,
+            "law_number": article_block.law_number,
+            "effective_date": article_block.effective_date,
+        }
 
         # Tạo context prefix: "Chương III | Mục 1 | Điều 15."
         prefix = _build_context_prefix(struct) if self.include_parent_context else ""
@@ -216,7 +274,7 @@ class LegalChunker:
         full_content = "\n".join(all_texts)
 
         # Text của parent = prefix + toàn bộ nội dung Điều
-        parent_text = f"{prefix}\n{full_content}".strip() if prefix else full_content # Kiểm tra (nếu prefix rỗng, không thêm dòng mới và ngược lại)
+        parent_text = _merge_prefix_with_content(prefix, full_content)
 
         # ── Bước 2: Tính token count ─────────────────────────────────────
         parent_tokens = _approx_token_count(parent_text)
@@ -255,27 +313,75 @@ class LegalChunker:
 
         # Children = từng Khoản/Điểm riêng lẻ (dùng để tìm kiếm)
         child_chunks: list[LegalChunk] = []
-        for child_block in child_blocks:
-            child_content = child_block.text.strip()
-            if not child_content:
-                continue
 
-            # Child text = prefix + nội dung khoản
-            child_text = f"{prefix}\n{child_content}".strip() if prefix else child_content
+        def append_child_chunk(text_content: str, chunk_type: str) -> None:
+            child_text = _merge_prefix_with_content(prefix, text_content)
             child_tokens = _approx_token_count(child_text)
-
-            if child_tokens < self.min_chunk_size:
-                continue  # Khoản quá ngắn, bỏ qua
-
             child_chunks.append(LegalChunk(
                 chunk_id=str(uuid.uuid4()),
                 text=child_text,
-                chunk_type=child_block.block_type,
+                chunk_type=chunk_type,
                 is_parent=False,
                 parent_chunk_id=parent_id,  # ← trỏ về parent
                 token_count=child_tokens,
                 **base_meta,
             ))
+
+        # Buffer gom các child ngắn để giảm nhiễu, nhưng không làm mất dữ liệu.
+        short_buffer: list[str] = []
+        short_buffer_type: Optional[str] = None
+
+        def flush_short_buffer() -> None:
+            nonlocal short_buffer, short_buffer_type
+            if not short_buffer:
+                return
+
+            merged_text = "\n".join(short_buffer).strip()
+            append_child_chunk(merged_text, short_buffer_type or "clause")
+            short_buffer = []
+            short_buffer_type = None
+
+        for child_block in child_blocks:
+            child_content = child_block.text.strip()
+            if not child_content:
+                continue
+
+            # Nếu một khoản quá dài, tách thành các đoạn có overlap.
+            child_parts = _split_text_with_overlap(
+                text=child_content,
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap,
+            )
+
+            for part in child_parts:
+                part = part.strip()
+                if not part:
+                    continue
+
+                part_with_prefix = _merge_prefix_with_content(prefix, part)
+                part_tokens = _approx_token_count(part_with_prefix)
+
+                if part_tokens < self.min_chunk_size:
+                    if not short_buffer:
+                        short_buffer_type = child_block.block_type
+                    short_buffer.append(part)
+                    continue
+
+                # Gặp đoạn đủ dài: ghép phần ngắn đang treo vào đoạn này
+                # để giảm số chunk và giảm chi phí embedding.
+                if short_buffer:
+                    merged_with_long = "\n".join(short_buffer + [part]).strip()
+                    append_child_chunk(
+                        merged_with_long,
+                        short_buffer_type or child_block.block_type,
+                    )
+                    short_buffer = []
+                    short_buffer_type = None
+                else:
+                    append_child_chunk(part, child_block.block_type)
+
+        # Giữ nốt phần còn lại để đảm bảo không mất nội dung ngắn.
+        flush_short_buffer()
 
         # Nếu không tạo được child nào (vì quá ngắn), trả về 1 chunk đơn thay thế
         if not child_chunks:

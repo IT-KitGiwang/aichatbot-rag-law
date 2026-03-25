@@ -37,7 +37,7 @@ class IngestionPipeline:
         persist_dir: str = "./vectorstore",
         collection_name: str = "legal_documents",
         chunk_size: int = 512,
-        chunk_overlap: int = 100,
+        chunk_overlap: int = 0,
         min_chunk_size: int = 100,
     ):
         """
@@ -130,7 +130,12 @@ class IngestionPipeline:
 
         # --- Bước 4: Ghi vào ChromaDB ---
         # Nếu overwrite=True, xóa dữ liệu cũ trước
-        actual_law_name = law_name or self.processor.extract_metadata_from_filename(str(pdf_path))
+        if law_name:
+            actual_law_name = law_name
+        else:
+            inferred = self.processor.extract_metadata_from_filename(pdf_path)
+            actual_law_name = inferred.get("law_name", "")
+
         if overwrite and actual_law_name:
             print(f"[Pipeline] Xóa dữ liệu cũ của '{actual_law_name}'...")
             deleted = self.indexer.delete_by_law(actual_law_name)
@@ -241,6 +246,24 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Xóa dữ liệu cũ của cùng law_name trước khi index.",
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=512,
+        help="Token tối đa mỗi chunk.",
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=0,
+        help="Token overlap khi tách chunk.",
+    )
+    parser.add_argument(
+        "--min-chunk-size",
+        type=int,
+        default=100,
+        help="Ngưỡng token tối thiểu cho child chunk.",
+    )
     parser.add_argument("--persist-dir",     default="./vectorstore", help="Thư mục ChromaDB.")
     parser.add_argument("--collection-name", default="legal_documents", help="Tên collection.")
 
@@ -251,9 +274,19 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    if args.chunk_size <= 0:
+        parser.error("--chunk-size phải > 0")
+    if args.chunk_overlap < 0:
+        parser.error("--chunk-overlap phải >= 0")
+    if args.min_chunk_size < 0:
+        parser.error("--min-chunk-size phải >= 0")
+
     pipeline = IngestionPipeline(
         persist_dir=args.persist_dir,
         collection_name=args.collection_name,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        min_chunk_size=args.min_chunk_size,
     )
 
     # --clear: xóa 1 bộ luật thủ công

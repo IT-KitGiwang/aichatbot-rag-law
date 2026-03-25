@@ -24,7 +24,7 @@ pdf_processing:
 chunking:
   strategy: "hierarchical_legal"
   chunk_size: 512          # tokens tối đa mỗi chunk
-  chunk_overlap: 100       # tokens chồng lấn
+  chunk_overlap: 0         # tắt overlap (không chồng lấn)
   min_chunk_size: 100      # tránh chunk quá nhỏ
   preserve_article_boundary: true
   include_parent_context: true

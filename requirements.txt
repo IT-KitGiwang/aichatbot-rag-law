@@ -25,7 +25,6 @@ langchain-chroma>=0.2.0
 chromadb>=0.6.0
 
 # === Embedding & Reranking ===
-sentence-transformers>=3.0.0
 torch>=2.0.0
 voyageai>=0.3.2
 

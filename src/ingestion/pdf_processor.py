@@ -53,13 +53,25 @@ LEGAL_PATTERNS: dict[str, re.Pattern] = {
 # Các dòng khớp bất kỳ pattern nào dưới đây sẽ bị bỏ qua hoàn toàn
 # trước khi đưa vào nhận dạng cấu trúc.
 #
-_NOISE_PATTERNS: list[re.Pattern] = [
-    re.compile(r"^\s*-\s*\d+\s*-\s*$"),  
+_NOISE_PATTERNS = [
+
+    # page numbers
+    re.compile(r"^\s*-\s*\d+\s*-\s*$"),
     re.compile(r"^\s*Trang\s+\d+\s*$", re.IGNORECASE),
     re.compile(r"^\s*\d+\s*$"),
+
+    # quốc hiệu
     re.compile(r"^\s*QUỐC\s*HỘI\s*$", re.IGNORECASE),
-    re.compile(r"^\s*CỘNG\s*HÒA\s*XÃ\s*HỘI\s*$", re.IGNORECASE),
-    re.compile(r"^\s*Độc\s*lập\s*[-–]\s*Tự\s*do\s*$", re.IGNORECASE),
+    re.compile(r"^\s*CỘNG\s*HÒA\s*XÃ\s*HỘI.*$", re.IGNORECASE),
+    re.compile(r"^\s*NGHĨA\s*VIỆT\s*NAM\s*$", re.IGNORECASE),
+    re.compile(r"^\s*Độc\s*lập\s*[-–]\s*Tự\s*do\s*[-–]\s*Hạnh\s*phúc\s*$", re.IGNORECASE),
+
+    # separator
+    re.compile(r"^\s*[-_]{5,}\s*$"),
+
+    # metadata
+    re.compile(r"^\s*Luật\s*số:.*$", re.IGNORECASE),
+    re.compile(r"^\s*Hà\s*Nội.*\d{4}\s*$", re.IGNORECASE),
 ]
 
 
@@ -90,6 +102,29 @@ def is_noise(line: str) -> bool:
         is_noise("Điều 15.")      → False
     """
     return any(p.search(line) for p in _NOISE_PATTERNS) # nếu khớp bất kỳ pattern nào → là noise (true), ngược lại → không phải noise (false)
+
+
+def _strip_invisible_chars(line: str) -> str:
+    """
+    Loại ký tự ẩn gây nhiễu nhưng giữ nguyên nội dung hiển thị.
+
+    Hàm này ưu tiên toàn vẹn dữ liệu: không nén khoảng trắng nội dung.
+    """
+    return line.replace("\u200b", "").replace("\ufeff", "").replace("\xa0", " ")
+
+
+def _normalize_line_for_match(line: str) -> str:
+    """
+    Chuẩn hóa dòng trước khi so khớp regex.
+
+    PDF thường chứa ký tự zero-width và khoảng trắng đặc biệt,
+    khiến regex theo mẫu hiển thị bị hụt match.
+
+    Chỉ dùng cho matching, không dùng để lưu nội dung chunk.
+    """
+    normalized = _strip_invisible_chars(line)
+    normalized = re.sub(r"\s+", " ", normalized, flags=re.UNICODE)
+    return normalized.strip()
 
 
 # ===========================================================================
@@ -177,6 +212,11 @@ class RawBlock:
     block_type: str           # "part" | "chapter" | "section" | "article"
                               # | "clause" | "point" | "body"
     structure: LegalStructure = field(default_factory=LegalStructure) # Đảm bảo luôn có một structure, dù rỗng riêng biệt
+    
+    # Thông tin văn bản luật
+    law_name: str = ""
+    law_number: str = ""
+    effective_date: str = ""
 
 # ===========================================================================
 # BƯỚC 1.3 — Trích xuất dòng từ PDF & Lọc noise
@@ -209,7 +249,7 @@ class LegalPDFProcessor:
         lines: list[tuple[str, int]] = []
 
         doc = fitz.open(str(pdf_path))
-        try:
+        try: # đảm bảo file PDF được đóng sau khi đọc, dù có lỗi xảy ra
             for page_num, page in enumerate(doc, start=1): # enumerate có nghĩa là vừa lấy index (số trang) vừa lấy nội dung trang
                 # "text" mode: trả về plain text, giữ nguyên layout dòng
                 raw_text = page.get_text("text") # xún dòng đúng chỗ mà PDF hiển thị
@@ -241,14 +281,17 @@ class LegalPDFProcessor:
         clean: list[tuple[str, int]] = []
 
         for line, page in raw_lines:
-            stripped = line.strip()
+            # Giữ nội dung hiển thị để bảo toàn dữ liệu.
+            stripped = _strip_invisible_chars(line).strip()
+            # Chuẩn hóa riêng cho bước regex matching.
+            match_line = _normalize_line_for_match(stripped)
 
             # Bỏ qua dòng trống
             if not stripped:
                 continue
 
             # Bỏ qua dòng khớp noise pattern
-            if is_noise(stripped):
+            if is_noise(match_line):
                 continue
 
             clean.append((stripped, page))
@@ -354,14 +397,92 @@ class LegalPDFProcessor:
                 # "body" — chỉ append, không flush
                 # Dòng body đầu tiên sau chapter/section thường là tiêu đề
                 if current_type == "chapter" and not current_struct.chapter_title:
+                    # Nếu dòng đầu body trùng chính tiêu đề chương,
+                    # bỏ qua để tránh lặp "Chương I\nChương I".
+                    if line == (current_struct.chapter or ""):
+                        continue
                     current_struct.chapter_title = line
+                    current_lines.append(line)
+                    continue
                 elif current_type == "section" and not current_struct.section_title:
+                    if line == (current_struct.section or ""):
+                        continue
                     current_struct.section_title = line
+                    current_lines.append(line)
+                    continue
+
+                # Chỉ bỏ trùng tuyệt đối liên tiếp trong cùng block.
+                if current_lines and line == current_lines[-1]:
+                    continue
                 current_lines.append(line)
 
         flush()  # flush block cuối cùng
         return blocks
 
+
+# Kết quả cuối cùng là một list[RawBlock]
+
+# clean_lines = [
+#     ("Chương I", 1),
+#     ("NHỮNG QUY ĐỊNH CHUNG", 1),
+#     ("Điều 1. Phạm vi điều chỉnh", 1),
+#     ("1. Luật này quy định...", 1),
+#     ("2. Cơ quan thuế...", 2),
+# ]
+
+#  RawBlock(
+#    text="Chương I",
+#    page=1,
+#    block_type="chapter",
+#    structure={
+#      part=None,
+#      chapter="Chương I",
+#      chapter_title="NHỮNG QUY ĐỊNH CHUNG",
+#      section=None,
+#      article=None
+#    }
+#  ),
+
+#  RawBlock(
+#    text="NHỮNG QUY ĐỊNH CHUNG",
+#    page=1,
+#    block_type="chapter",
+#    structure={
+#      chapter="Chương I",
+#      chapter_title="NHỮNG QUY ĐỊNH CHUNG"
+#    }
+#  ),
+
+#  RawBlock(
+#    text="Điều 1. Phạm vi điều chỉnh",
+#    page=1,
+#    block_type="article",
+#    structure={
+#      chapter="Chương I",
+#      article="Điều 1. Phạm vi điều chỉnh"
+#    }
+#  ),
+
+#  RawBlock(
+#    text="1. Luật này quy định...",
+#    page=1,
+#    block_type="clause",
+#    structure={
+#      chapter="Chương I",
+#      article="Điều 1. Phạm vi điều chỉnh"
+#    }
+#  ),
+
+#  RawBlock(
+#    text="2. Cơ quan thuế...",
+#    page=2,
+#    block_type="clause",
+#    structure={
+#      chapter="Chương I",
+#      article="Điều 1. Phạm vi điều chỉnh"
+#    }
+#  )
+# ]
     # ------------------------------------------------------------------
     # Bước 1.5: Public API — gom 3 bước thành một lời gọi duy nhất
     # ------------------------------------------------------------------
@@ -423,13 +544,10 @@ class LegalPDFProcessor:
         blocks      = self._identify_structure(clean_lines)
 
         # Gắn thông tin văn bản luật vào từng block
-        # (dùng dict _law_info để không làm bẩn dataclass RawBlock)
         for block in blocks:
-            block._law_info = {
-                "law_name":       law_name,
-                "law_number":     law_number,
-                "effective_date": effective_date,
-            }
+            block.law_name = law_name
+            block.law_number = law_number
+            block.effective_date = effective_date
 
         return blocks
 
@@ -440,6 +558,15 @@ class LegalPDFProcessor:
         Ví dụ:
             "luat_hon_nhan_2014.pdf" → {"law_name": "Luat Hon Nhan 2014"}
         """
+        # Trích xuất số cuối cùng trong tên file để coi như năm (VD: 2014)
         name = pdf_path.stem.replace("_", " ").title()
+        
+        # Thử tìm năm trong chuỗi
+        year_match = re.search(r'\b(19\d{2}|20\d{2})\b', name)
+        year = year_match.group(1) if year_match else ""
+        
+        # Hiện tại module này chỉ hỗ trợ suy luận tên luật từ filename.
+        # Các metadata khác (số hiệu, ngày hiệu lực) không thể nội suy chính xác
+        # từ filename nên sẽ được giữ cố định rỗng, người dùng cần truyền vào khi gọi.
         return {"law_name": name, "law_number": "", "effective_date": ""}
 

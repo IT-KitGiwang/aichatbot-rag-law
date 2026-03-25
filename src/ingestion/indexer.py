@@ -139,6 +139,12 @@ class LegalIndexer:
             print("[LegalIndexer] Không có chunk nào để index.")
             return
 
+        if len(chunks) != len(vectors):
+            raise ValueError(
+                "Số lượng chunks và vectors không khớp: "
+                f"chunks={len(chunks)}, vectors={len(vectors)}"
+            )
+
         # Tách riêng child và parent
         child_ids, child_texts, child_vectors, child_metas = [], [], [], []
         parent_ids, parent_texts, parent_vectors, parent_metas = [], [], [], []

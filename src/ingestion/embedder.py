@@ -25,10 +25,10 @@ from src.ingestion.legal_chunker import LegalChunk
 _DEFAULT_CONFIG = {
     "provider":        "voyageai",
     "model":           "voyage-law-2",
-    "dimension":       1024,
+    "dimension":       1024, # Voyage Law 2 có dimension 1024, phù hợp cho luật pháp
     "api_key_env":     "VOYAGE_API_KEY",
-    "batch_size":      32,
-    "max_retries":     3,
+    "batch_size":      32, # Chia nhỏ batch để tránh lỗi request quá lớn, vẫn tận dụng được song song hóa của GPU
+    "max_retries":     3, 
     "retry_backoff_s": 1.5,
 }
 
@@ -139,10 +139,15 @@ class EmbeddingGenerator:
                         input_type=input_type,
                     )
                     vectors = response.embeddings
-                    if vectors and len(vectors[0]) != self.dimension:
+                    if len(vectors) != len(batch):
+                        raise ValueError(
+                            "Embedding count mismatch: "
+                            f"requested={len(batch)}, received={len(vectors)}"
+                        )
+                    if any(len(vec) != self.dimension for vec in vectors):
                         raise ValueError(
                             f"Dimension mismatch: config={self.dimension}, "
-                            f"voyage={len(vectors[0])}"
+                            "voyage response has unexpected vector size"
                         )
                     all_vectors.extend(vectors)
                     break
