@@ -3,7 +3,8 @@ from dataclasses import dataclass
 import pytest
 
 from src.ingestion.embedder import EmbeddingGenerator
-from src.ingestion.pdf_processor import LegalPDFProcessor
+from src.ingestion.legal_chunker import LegalChunker
+from src.ingestion.pdf_processor import LegalPDFProcessor, LegalStructure, RawBlock
 
 
 def test_identify_structure_keeps_chapter_title_in_text() -> None:
@@ -61,3 +62,50 @@ def test_encode_batch_raises_on_embedding_count_mismatch(monkeypatch: pytest.Mon
 
 	with pytest.raises(ValueError, match="Embedding count mismatch"):
 		embedder._encode_batch(["text 1", "text 2"], input_type="document")
+
+
+def test_process_article_keeps_long_chunks_under_budget() -> None:
+	chunker = LegalChunker(chunk_size=120, chunk_overlap=20, min_chunk_size=20)
+	structure = LegalStructure(chapter="Chương I", article="Điều 1. Phạm vi điều chỉnh")
+	article_block = RawBlock(
+		text="Điều 1. Phạm vi điều chỉnh",
+		page=1,
+		block_type="article",
+		structure=structure.clone(),
+		law_name="Luật mẫu",
+	)
+	long_clause_text = "1. " + "noi dung " * 260
+	child_blocks = [
+		RawBlock(
+			text=long_clause_text,
+			page=1,
+			block_type="clause",
+			structure=structure.clone(),
+			law_name="Luật mẫu",
+		),
+	]
+
+	chunks = chunker._process_article(article_block, child_blocks)
+
+	assert chunks
+	assert any(chunk.is_parent for chunk in chunks)
+	assert all(chunk.token_count <= 120 for chunk in chunks if not chunk.is_parent)
+	assert any(chunk.token_count > 120 for chunk in chunks if chunk.is_parent)
+
+
+def test_process_article_fallback_splits_when_no_child_blocks() -> None:
+	chunker = LegalChunker(chunk_size=120, chunk_overlap=20, min_chunk_size=20)
+	structure = LegalStructure(chapter="Chương I", article="Điều 1. Phạm vi điều chỉnh")
+	article_block = RawBlock(
+		text="Điều 1. Phạm vi điều chỉnh " + ("noi dung " * 320),
+		page=1,
+		block_type="article",
+		structure=structure.clone(),
+		law_name="Luật mẫu",
+	)
+
+	chunks = chunker._process_article(article_block, [])
+
+	assert any(chunk.is_parent for chunk in chunks)
+	assert all(chunk.token_count <= 120 for chunk in chunks if not chunk.is_parent)
+	assert len([chunk for chunk in chunks if not chunk.is_parent]) >= 2

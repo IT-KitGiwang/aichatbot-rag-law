@@ -1,0 +1,17 @@
+[
+  {
+    "question": "Phạm vi điều chỉnh của Luật Quản lý thuế là gì?",
+    "expected_articles": ["Điều 1. Phạm vi điều chỉnh"],
+    "category": "specific_article"
+  },
+  {
+    "question": "Đối tượng áp dụng trong Luật Quản lý thuế gồm những ai?",
+    "expected_articles": ["Điều 2. Đối tượng áp dụng"],
+    "category": "concept"
+  },
+  {
+    "question": "Luật Quản lý thuế giải thích từ ngữ tại điều nào?",
+    "expected_articles": ["Điều 3. Giải thích từ ngữ"],
+    "category": "specific_article"
+  }
+]

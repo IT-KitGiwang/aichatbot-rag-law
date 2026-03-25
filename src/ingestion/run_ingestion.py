@@ -123,10 +123,25 @@ class IngestionPipeline:
         n_parents  = sum(1 for c in chunks if c.is_parent)
         print(f"[Pipeline]   → {len(chunks)} chunks ({n_children} child, {n_parents} parent)")
 
+        if not chunks:
+            elapsed = round(time.time() - t0, 1)
+            print("[Pipeline] Không tạo được chunk nào. Bỏ qua bước embedding và index.")
+            print(f"[Pipeline] Xong! {elapsed}s | DB hiện có: {self.indexer.count()}")
+            print(f"{'='*60}\n")
+            return {
+                "file":      str(pdf_path),
+                "blocks":    len(blocks),
+                "chunks":    0,
+                "children":  0,
+                "parents":   0,
+                "elapsed_s": elapsed,
+            }
+
         # --- Bước 3: Tạo embeddings ---
         print("[Pipeline] Bước 3/4: Tạo embeddings (có thể mất vài phút)...")
         vectors = self.embedder.embed_chunks_batched(chunks)
-        print(f"[Pipeline]   → {len(vectors)} vectors (dim={len(vectors[0])})")
+        vector_dim = len(vectors[0]) if vectors else 0
+        print(f"[Pipeline]   → {len(vectors)} vectors (dim={vector_dim})")
 
         # --- Bước 4: Ghi vào ChromaDB ---
         # Nếu overwrite=True, xóa dữ liệu cũ trước

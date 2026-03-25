@@ -73,7 +73,7 @@ class LegalChunk:
     hierarchy_path: str = ""         # "Chương III > Mục 1 > Điều 15"
 
     # --- Parent-Child ---
-    is_parent: bool = False          # True = parent chunk (toàn Điều), False = child chunk (khoản/điểm)
+    is_parent: bool = False          # True = parent chunk (toàn Điều)
     parent_chunk_id: Optional[str] = None  # None nếu là parent hoặc chunk đơn
 
     # --- Thống kê ---
@@ -105,7 +105,7 @@ class LegalChunk:
             "article_title":    self.article_title,
             "hierarchy_path":   self.hierarchy_path,
             "is_parent":        self.is_parent,
-            "parent_chunk_id":  self.parent_chunk_id or "", 
+            "parent_chunk_id":  self.parent_chunk_id or "",  # None → ""
             "token_count":      self.token_count,
         }
 
@@ -129,6 +129,17 @@ def _approx_token_count(text: str) -> int:
     words = text.split()
     # Hệ số 1.3: tiếng Việt có nhiều từ ghép ngắn → token count cao hơn word count
     return int(len(words) * 1.3)
+
+
+def _token_budget_to_word_budget(token_budget: int, safety_margin_tokens: int = 0) -> int:
+    """
+    Quy đổi token budget sang word budget an toàn.
+
+    Vì _approx_token_count() ước tính token ≈ 1.3 * số từ, ta dùng thêm
+    một lớp đệm nhỏ để tránh segment sau khi ghép prefix bị vượt trần.
+    """
+    safe_tokens = max(1, token_budget - safety_margin_tokens)
+    return max(1, int(safe_tokens / 1.35))
 
 
 def _build_context_prefix(struct: LegalStructure) -> str:
@@ -159,7 +170,7 @@ def _build_context_prefix(struct: LegalStructure) -> str:
 
     if struct.article:
         # "Điều 15. Quyền và nghĩa vụ..." → chỉ lấy "Điều 15."
-        article_short = struct.article.split()[0:2] # ["Điều", "15."]
+        article_short = struct.article.split()[0:2]  # ["Điều", "15."]
         parts.append(" ".join(article_short))
 
     return " | ".join(parts)  # "Chương III | Mục 1 | Điều 15."
@@ -167,7 +178,7 @@ def _build_context_prefix(struct: LegalStructure) -> str:
 
 def _split_text_with_overlap(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
     """
-    Cắt text thành nhiều đoạn chồng lấn theo đơn vị từ.
+    Cắt text thành nhiều đoạn chồng lấn theo giới hạn token xấp xỉ.
 
     Mục tiêu: khi một khoản quá dài, vẫn tách được thành nhiều child chunks
     nhưng giữ được ngữ cảnh liên tục qua overlap.
@@ -179,13 +190,17 @@ def _split_text_with_overlap(text: str, chunk_size: int, chunk_overlap: int) -> 
     if chunk_size <= 0:
         return [text]
 
+    # Quy đổi token budget sang số từ để segment thực tế không bị vượt trần.
+    max_words = _token_budget_to_word_budget(chunk_size, safety_margin_tokens=8)
+
     # Tránh step <= 0 gây vòng lặp vô hạn.
-    overlap = max(0, min(chunk_overlap, chunk_size - 1))
-    step = max(1, chunk_size - overlap)
+    overlap_words = _token_budget_to_word_budget(chunk_overlap)
+    overlap_words = max(0, min(overlap_words, max_words - 1))
+    step = max(1, max_words - overlap_words)
 
     segments: list[str] = []
     for start in range(0, len(words), step):
-        end = start + chunk_size
+        end = start + max_words
         segment_words = words[start:end]
         if not segment_words:
             break
@@ -194,6 +209,26 @@ def _split_text_with_overlap(text: str, chunk_size: int, chunk_overlap: int) -> 
             break
 
     return segments
+
+
+def _truncate_text_to_budget(text: str, token_budget: int, safety_margin_tokens: int = 12) -> str:
+    """
+    Cắt text xuống mức an toàn theo token budget xấp xỉ.
+
+    Dùng cho parent chunk dài để giữ context gọn hơn, giảm chi phí lưu trữ
+    và tránh kéo large_rate lên vì các parent quá dài.
+    """
+    content = text.strip()
+    if not content:
+        return content
+
+    words = content.split()
+    max_words = _token_budget_to_word_budget(token_budget, safety_margin_tokens=safety_margin_tokens)
+    if len(words) <= max_words:
+        return content
+
+    trimmed = " ".join(words[:max_words]).strip()
+    return f"{trimmed} ..."
 
 
 def _merge_prefix_with_content(prefix: str, content: str) -> str:
@@ -222,6 +257,8 @@ def _merge_prefix_with_content(prefix: str, content: str) -> str:
 # ===========================================================================
 # BƯỚC 2.3 — LegalChunker class & _process_article()
 # ===========================================================================
+
+from dataclasses import dataclass
 
 @dataclass
 class LegalChunker:
@@ -278,15 +315,17 @@ class LegalChunker:
 
         # ── Bước 2: Tính token count ─────────────────────────────────────
         parent_tokens = _approx_token_count(parent_text)
+        parent_is_long = parent_tokens > self.chunk_size
 
         # Base metadata dùng chung cho mọi chunk của Điều này
         base_meta = self._build_base_meta(struct, law_info, article_block.page)
 
         # ── Bước 3a: Điều ngắn → 1 chunk đơn ───────────────────────────
-        if parent_tokens <= self.chunk_size:
+        if not parent_is_long:
             # Không cần chia — 1 chunk là đủ, không có parent/child
-            # Lưu ý: KHÔNG bỏ qua dù token ít — một Điều luật dù ngắn
-            # vẫn có giá trị pháp lý đầy đủ (ví dụ: điều khoản hiệu lực)
+            if parent_tokens < self.min_chunk_size:
+                return []  # Quá ngắn, bỏ qua
+
             return [LegalChunk(
                 chunk_id=str(uuid.uuid4()),
                 text=parent_text,
@@ -300,7 +339,7 @@ class LegalChunker:
         # ── Bước 3b: Điều dài → parent + N children ─────────────────────
         parent_id = str(uuid.uuid4())
 
-        # Parent chunk = toàn bộ Điều (dùng để trả về context đầy đủ)
+        # Parent chunk giữ full text để LLM có đủ ngữ cảnh khi cần mở rộng.
         parent_chunk = LegalChunk(
             chunk_id=parent_id,
             text=parent_text,
@@ -314,18 +353,51 @@ class LegalChunker:
         # Children = từng Khoản/Điểm riêng lẻ (dùng để tìm kiếm)
         child_chunks: list[LegalChunk] = []
 
+        prefix_tokens = _approx_token_count(prefix) if prefix else 0
+        child_budget = max(1, self.chunk_size - prefix_tokens - 8)
+
         def append_child_chunk(text_content: str, chunk_type: str) -> None:
-            child_text = _merge_prefix_with_content(prefix, text_content)
-            child_tokens = _approx_token_count(child_text)
-            child_chunks.append(LegalChunk(
-                chunk_id=str(uuid.uuid4()),
-                text=child_text,
-                chunk_type=chunk_type,
-                is_parent=False,
-                parent_chunk_id=parent_id,  # ← trỏ về parent
-                token_count=child_tokens,
-                **base_meta,
-            ))
+            content = text_content.strip()
+            if not content:
+                return
+
+            for segment in _split_text_with_overlap(content, child_budget, self.chunk_overlap):
+                segment = segment.strip()
+                if not segment:
+                    continue
+
+                child_text = _merge_prefix_with_content(prefix, segment)
+                child_tokens = _approx_token_count(child_text)
+
+                # Nếu vẫn vượt trần do prefix hoặc ước lượng token, cắt tiếp.
+                if child_tokens > self.chunk_size and len(segment.split()) > 1:
+                    tighter_budget = max(1, child_budget // 2)
+                    for tighter_segment in _split_text_with_overlap(segment, tighter_budget, self.chunk_overlap):
+                        tighter_segment = tighter_segment.strip()
+                        if not tighter_segment:
+                            continue
+                        tighter_text = _merge_prefix_with_content(prefix, tighter_segment)
+                        tighter_tokens = _approx_token_count(tighter_text)
+                        child_chunks.append(LegalChunk(
+                            chunk_id=str(uuid.uuid4()),
+                            text=tighter_text,
+                            chunk_type=chunk_type,
+                            is_parent=False,
+                            parent_chunk_id=parent_id,
+                            token_count=tighter_tokens,
+                            **base_meta,
+                        ))
+                    continue
+
+                child_chunks.append(LegalChunk(
+                    chunk_id=str(uuid.uuid4()),
+                    text=child_text,
+                    chunk_type=chunk_type,
+                    is_parent=False,
+                    parent_chunk_id=parent_id,  # ← trỏ về parent
+                    token_count=child_tokens,
+                    **base_meta,
+                ))
 
         # Buffer gom các child ngắn để giảm nhiễu, nhưng không làm mất dữ liệu.
         short_buffer: list[str] = []
@@ -371,29 +443,51 @@ class LegalChunker:
                 # để giảm số chunk và giảm chi phí embedding.
                 if short_buffer:
                     merged_with_long = "\n".join(short_buffer + [part]).strip()
-                    append_child_chunk(
-                        merged_with_long,
-                        short_buffer_type or child_block.block_type,
-                    )
-                    short_buffer = []
-                    short_buffer_type = None
+                    merged_tokens = _approx_token_count(_merge_prefix_with_content(prefix, merged_with_long))
+                    if merged_tokens <= self.chunk_size:
+                        append_child_chunk(
+                            merged_with_long,
+                            short_buffer_type or child_block.block_type,
+                        )
+                        short_buffer = []
+                        short_buffer_type = None
+                    else:
+                        # Không ghép nếu sẽ làm chunk phình quá trần.
+                        flush_short_buffer()
+                        append_child_chunk(part, child_block.block_type)
                 else:
                     append_child_chunk(part, child_block.block_type)
 
         # Giữ nốt phần còn lại để đảm bảo không mất nội dung ngắn.
         flush_short_buffer()
 
-        # Nếu không tạo được child nào (vì quá ngắn), trả về 1 chunk đơn thay thế
+        # Nếu vẫn chưa có child nào, cắt parent_text thành các child chunks nhỏ hơn.
+        # Tránh rơi về một chunk dài bằng parent vì sẽ làm mất mục tiêu child-only embedding.
         if not child_chunks:
-            return [LegalChunk(
-                chunk_id=parent_id,
-                text=parent_text,
-                chunk_type=article_block.block_type,
-                is_parent=False,
-                parent_chunk_id=None,
-                token_count=parent_tokens,
-                **base_meta,
-            )]
+            fallback_segments = _split_text_with_overlap(
+                text=full_content,
+                chunk_size=child_budget,
+                chunk_overlap=self.chunk_overlap,
+            )
+
+            for segment in fallback_segments:
+                segment = segment.strip()
+                if not segment:
+                    continue
+                child_text = _merge_prefix_with_content(prefix, segment)
+                child_tokens = _approx_token_count(child_text)
+                child_chunks.append(LegalChunk(
+                    chunk_id=str(uuid.uuid4()),
+                    text=child_text,
+                    chunk_type=article_block.block_type,
+                    is_parent=False,
+                    parent_chunk_id=parent_id,
+                    token_count=child_tokens,
+                    **base_meta,
+                ))
+
+        if not child_chunks:
+            return [parent_chunk]
 
         return [parent_chunk] + child_chunks
 

@@ -147,13 +147,12 @@ class LegalIndexer:
 
         # Tách riêng child và parent
         child_ids, child_texts, child_vectors, child_metas = [], [], [], []
-        parent_ids, parent_texts, parent_vectors, parent_metas = [], [], [], []
+        parent_ids, parent_texts, parent_metas = [], [], []
 
         for chunk, vec in zip(chunks, vectors):
             if chunk.is_parent:
                 parent_ids.append(chunk.chunk_id)
                 parent_texts.append(chunk.text)
-                parent_vectors.append(vec)          # zero vector placeholder
                 parent_metas.append(chunk.to_chroma_metadata())
             else:
                 child_ids.append(chunk.chunk_id)
@@ -178,7 +177,6 @@ class LegalIndexer:
                 collection=self._parent_collection,
                 ids=parent_ids,
                 documents=parent_texts,
-                embeddings=parent_vectors,
                 metadatas=parent_metas,
             )
             print(f"[LegalIndexer] Đã lưu {len(parent_ids)} parent chunks")
@@ -188,8 +186,8 @@ class LegalIndexer:
         collection,
         ids: list[str],
         documents: list[str],
-        embeddings: list[list[float]],
         metadatas: list[dict],
+        embeddings: Optional[list[list[float]]] = None,
         batch_size: int = 100,
     ) -> None:
         """
@@ -212,8 +210,8 @@ class LegalIndexer:
             collection.upsert(
                 ids=ids[i:end],
                 documents=documents[i:end],
-                embeddings=embeddings[i:end],
                 metadatas=metadatas[i:end],
+                embeddings=embeddings[i:end] if embeddings is not None else None,
             )
             print(f"[LegalIndexer]   upsert {end}/{total} chunks")
 
@@ -293,6 +291,48 @@ class LegalIndexer:
             })
 
         return results
+
+    def query_with_parent_context(
+        self,
+        query_vector: list[float],
+        n_results: int = 15,
+        where: Optional[dict] = None,
+        min_score: float = 0.55,
+    ) -> list[dict]:
+        """
+        Truy vấn child chunks rồi kéo parent full text cho từng kết quả.
+
+        Đây là luồng dùng cho LLM:
+          1. tìm child chunk gần nhất với query
+          2. lấy parent full text theo parent_chunk_id
+          3. trả về cả child + parent để ghép context
+
+        Returns:
+            list[dict] với các khóa:
+                - id
+                - text
+                - metadata
+                - score
+                - parent: dict | None
+        """
+        child_results = self.query(query_vector=query_vector, n_results=n_results, where=where)
+        parent_cache: dict[str, Optional[dict]] = {}
+        enriched: list[dict] = []
+
+        for child in child_results:
+            parent_id = child.get("metadata", {}).get("parent_chunk_id", "")
+            parent = None
+            if parent_id and float(child.get("score", 0.0)) >= min_score:
+                if parent_id not in parent_cache:
+                    parent_cache[parent_id] = self.get_parent(parent_id)
+                parent = parent_cache[parent_id]
+
+            enriched.append({
+                **child,
+                "parent": parent,
+            })
+
+        return enriched
 
     def get_parent(self, parent_chunk_id: str) -> Optional[dict]:
         """
