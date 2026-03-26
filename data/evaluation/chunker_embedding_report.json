@@ -1,0 +1,41 @@
+{
+  "reports": [
+    {
+      "file": "D:\\AI_ENGINEERING\\aichatbot-rag-law\\data\\raw_pdfs\\LUAT-QUAN-LY-THUE-2019.pdf",
+      "config": {
+        "chunk_size": 512,
+        "chunk_overlap": 50,
+        "min_chunk_size": 80,
+        "on_small_chunk": "merge_next"
+      },
+      "summary": {
+        "total": 233,
+        "child": 198,
+        "parent": 35,
+        "child_avg_tokens": 294.28,
+        "child_util": 0.5748,
+        "child_small_rate": 0.0253,
+        "child_large_rate": 0.0,
+        "parent_rate": 0.1502,
+        "max_child_tokens": 508,
+        "max_parent_tokens": 2026,
+        "min_child_tokens": 39
+      },
+      "embedding": {
+        "status": "skipped_no_api_key",
+        "actual": false,
+        "vectors": 198,
+        "vector_dim": 1024,
+        "embed_s": 0.0,
+        "tokens_to_embed": 58267.44,
+        "estimated_cost_proxy": 58267.44,
+        "note": "VOYAGE_API_KEY not found; embedding request skipped and cost is estimated from child token volume."
+      },
+      "timings": {
+        "process_s": 0.3148,
+        "chunk_s": 0.0164,
+        "total_s": 0.3312
+      }
+    }
+  ]
+}

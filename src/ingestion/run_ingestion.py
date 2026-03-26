@@ -1,5 +1,5 @@
 # src/ingestion/run_ingestion.py
-# Script chạy toàn bộ pipeline ingestion: PDF → Chunks → Embeddings → ChromaDB
+# Script chạy toàn bộ pipeline ingestion: PDF → chunks → embeddings → ChromaDB.
 # Usage: python -m src.ingestion.run_ingestion --pdf data/raw_pdfs/luat_hon_nhan.pdf
 
 from __future__ import annotations
@@ -41,14 +41,14 @@ class IngestionPipeline:
         min_chunk_size: int = 100,
     ):
         """
-        Khởi tạo 4 module pipeline.
+        Khởi tạo các module chính của ingestion pipeline.
 
         Args:
             persist_dir:     Thư mục lưu ChromaDB.
             collection_name: Tên collection ChromaDB.
-            chunk_size:      Token tối đa mỗi child chunk.
-            chunk_overlap:   Token overlap khi chia child chunks.
-            min_chunk_size:  Token tối thiểu để giữ lại một chunk.
+            chunk_size:      Giới hạn token ước lượng cho mỗi child chunk.
+            chunk_overlap:   Phần token chồng lấn khi buộc phải cắt nhỏ.
+            min_chunk_size:  Ngưỡng tối thiểu để ưu tiên gộp chunk nhỏ.
         """
         print("[Pipeline] Khởi tạo pipeline...")
 
@@ -60,7 +60,7 @@ class IngestionPipeline:
             min_chunk_size=min_chunk_size,
         )
 
-        # EmbeddingGenerator dùng Singleton — model chỉ load 1 lần
+        # EmbeddingGenerator dùng Singleton để tránh tải model/client lặp lại.
         self.embedder = EmbeddingGenerator()
 
         self.indexer = LegalIndexer(
@@ -101,7 +101,7 @@ class IngestionPipeline:
         print(f"[Pipeline] Xử lý: {pdf_path.name}")
         t0 = time.time()
 
-        # --- Bước 1: Extract PDF → RawBlock ---
+        # --- Bước 1: PDF → RawBlock ---
         print("[Pipeline] Bước 1/4: Đọc và phân tích PDF...")
         blocks = self.processor.process(
             pdf_path=str(pdf_path),
@@ -116,7 +116,7 @@ class IngestionPipeline:
             return {"file": str(pdf_path), "blocks": 0, "chunks": 0,
                     "children": 0, "parents": 0, "elapsed_s": 0}
 
-        # --- Bước 2: Chunk → LegalChunk ---
+        # --- Bước 2: RawBlock → LegalChunk ---
         print("[Pipeline] Bước 2/4: Chia chunks...")
         chunks = self.chunker.chunk(blocks)
         n_children = sum(1 for c in chunks if not c.is_parent)
@@ -137,14 +137,14 @@ class IngestionPipeline:
                 "elapsed_s": elapsed,
             }
 
-        # --- Bước 3: Tạo embeddings ---
+        # --- Bước 3: Tạo embeddings cho child chunks ---
         print("[Pipeline] Bước 3/4: Tạo embeddings (có thể mất vài phút)...")
         vectors = self.embedder.embed_chunks_batched(chunks)
         vector_dim = len(vectors[0]) if vectors else 0
         print(f"[Pipeline]   → {len(vectors)} vectors (dim={vector_dim})")
 
         # --- Bước 4: Ghi vào ChromaDB ---
-        # Nếu overwrite=True, xóa dữ liệu cũ trước
+        # Nếu overwrite=True thì xóa dữ liệu cũ của đúng bộ luật này trước.
         if law_name:
             actual_law_name = law_name
         else:
@@ -222,7 +222,7 @@ class IngestionPipeline:
 
 
 # ===========================================================================
-# CLI — Chạy từ terminal
+# CLI — Chạy từ terminal.
 # ===========================================================================
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -231,7 +231,7 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawTextHelpFormatter,
     )
 
-    # Nguồn dữ liệu (chọn 1 trong 2)
+    # Nguồn dữ liệu: chọn đúng một trong hai đầu vào.
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument(
         "--pdf",
@@ -244,12 +244,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Thư mục chứa nhiều file PDF cần index.",
     )
 
-    # Metadata bổ sung (chỉ dùng với --pdf)
+    # Metadata bổ sung, chỉ áp dụng khi chạy với --pdf.
     parser.add_argument("--law-name",       default="", help="Tên bộ luật.")
     parser.add_argument("--law-number",     default="", help="Số hiệu văn bản.")
     parser.add_argument("--effective-date", default="", help="Ngày có hiệu lực (YYYY-MM-DD).")
 
-    # Tùy chọn
+    # Tùy chọn hành vi khi nạp dữ liệu.
     parser.add_argument(
         "--clear",
         metavar="LAW_NAME",
@@ -304,7 +304,7 @@ def main() -> None:
         min_chunk_size=args.min_chunk_size,
     )
 
-    # --clear: xóa 1 bộ luật thủ công
+    # --clear: xóa thủ công một bộ luật khỏi DB trước khi nạp lại.
     if args.clear:
         print(f"[CLI] Xóa '{args.clear}' khỏi ChromaDB...")
         deleted = pipeline.indexer.delete_by_law(args.clear)

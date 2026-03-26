@@ -13,6 +13,7 @@ Usage:
 Optional:
     --index         Persist chunks to ChromaDB after the test run.
     --output-json   Write the report to a JSON file.
+    --compare       Alias for --benchmark (compare multiple chunking configs).
 """
 
 from __future__ import annotations
@@ -244,10 +245,10 @@ def _print_benchmark(results: list[dict]) -> None:
 def _default_benchmark_configs() -> list[dict]:
     """Các cấu hình bám sát ngưỡng người dùng đưa ra."""
     return [
-        {"chunk_size": 512, "min_chunk_size": 120, "chunk_overlap": 20},
-        {"chunk_size": 544, "min_chunk_size": 120, "chunk_overlap": 20},
-        {"chunk_size": 576, "min_chunk_size": 120, "chunk_overlap": 20},
-        {"chunk_size": 640, "min_chunk_size": 120, "chunk_overlap": 20},
+        {"chunk_size": 512, "min_chunk_size": 150, "chunk_overlap": 50},
+        {"chunk_size": 544, "min_chunk_size": 150, "chunk_overlap": 50},
+        {"chunk_size": 576, "min_chunk_size": 150, "chunk_overlap": 50},
+        {"chunk_size": 640, "min_chunk_size": 150, "chunk_overlap": 50},
     ]
 
 
@@ -388,13 +389,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--law-number", default="", help="Law number metadata.")
     parser.add_argument("--effective-date", default="", help="Effective date metadata.")
     parser.add_argument("--chunk-size", type=int, default=512, help="Max tokens per chunk.")
-    parser.add_argument("--chunk-overlap", type=int, default=20, help="Token overlap for splitting long chunks.")
-    parser.add_argument("--min-chunk-size", type=int, default=120, help="Minimum token threshold for keeping a chunk.")
+    parser.add_argument("--chunk-overlap", type=int, default=50, help="Token overlap for splitting long chunks.")
+    parser.add_argument("--min-chunk-size", type=int, default=150, help="Minimum token threshold for keeping a chunk.")
     parser.add_argument("--persist-dir", default="./vectorstore", help="ChromaDB persist directory.")
     parser.add_argument("--collection-name", default="legal_documents", help="Main ChromaDB collection name.")
     parser.add_argument("--index", action="store_true", help="Persist results to ChromaDB after the test run.")
     parser.add_argument("--skip-embed", action="store_true", help="Skip embedding and only test extract/chunk metrics.")
     parser.add_argument("--benchmark", action="store_true", help="Run multiple chunking configs and compare them.")
+    parser.add_argument("--compare", action="store_true", help="Alias for --benchmark.")
     parser.add_argument("--output-json", default="", help="Write the final report to a JSON file.")
 
     return parser
@@ -413,10 +415,10 @@ def main() -> None:
 
     processor = LegalPDFProcessor()
 
-    if args.benchmark:
+    if args.benchmark or args.compare:
         pdf_path = Path(args.pdf) if args.pdf else None
         if pdf_path is None:
-            parser.error("--benchmark currently requires --pdf, not --pdf-dir.")
+            parser.error("--benchmark/--compare currently requires --pdf, not --pdf-dir.")
         if not pdf_path.exists():
             parser.error(f"PDF not found: {pdf_path}")
 

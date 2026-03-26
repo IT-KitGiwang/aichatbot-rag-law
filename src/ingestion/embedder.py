@@ -5,7 +5,7 @@ Chuyển đổi: list[LegalChunk] → list[vector]
 
 Provider: Voyage AI
 Model mặc định: voyage-3-large
-    - Embedding API cloud, không phụ thuộc GPU local
+    - Dùng API cloud, không phụ thuộc GPU local
     - Dimension mặc định: 1024
 """
 
@@ -21,13 +21,13 @@ from src.ingestion.legal_chunker import LegalChunk
 # BƯỚC 3.1 — Cấu hình & Load Model (Singleton)
 # ===========================================================================
 
-# Cấu hình mặc định — đồng bộ với config.yaml
+# Cấu hình mặc định, giữ đồng bộ với config.yaml.
 _DEFAULT_CONFIG = {
     "provider":        "voyageai",
     "model":           "voyage-law-2",
-    "dimension":       1024, # Voyage Law 2 có dimension 1024, phù hợp cho luật pháp
+    "dimension":       1024,  # Model này trả về vector 1024 chiều.
     "api_key_env":     "VOYAGE_API_KEY",
-    "batch_size":      32, # Chia nhỏ batch để tránh lỗi request quá lớn, vẫn tận dụng được song song hóa của GPU
+    "batch_size":      32,    # Batch nhỏ hơn để tránh request quá lớn và giảm lỗi timeout/rate limit.
     "max_retries":     3, 
     "retry_backoff_s": 1.5,
 }
@@ -35,10 +35,10 @@ _DEFAULT_CONFIG = {
 
 class EmbeddingGenerator:
     """
-    Tạo vector embedding cho LegalChunk và câu hỏi của user.
+    Tạo vector embedding cho LegalChunk và câu hỏi của người dùng.
 
-    Client được khởi tạo theo lazy loading, dùng chung giữa các instance
-    để tránh tạo lại kết nối nhiều lần.
+    Client được khởi tạo theo lazy loading và dùng chung giữa các instance
+    để tránh tạo lại kết nối/API client nhiều lần.
 
     Cách dùng:
         embedder = EmbeddingGenerator()
@@ -50,7 +50,7 @@ class EmbeddingGenerator:
         q_vec   = embedder.embed_query("Điều kiện ly hôn là gì?")  # list[float]
     """
 
-    # Dùng chung client cho mọi instance
+    # Dùng chung client cho mọi instance để không khởi tạo lặp lại.
     _client = None
 
     def __init__(self, config: dict | None = None):
@@ -74,14 +74,13 @@ class EmbeddingGenerator:
             raise ValueError("Hiện tại chỉ hỗ trợ provider='voyageai'.")
 
     # ------------------------------------------------------------------
-    # Lazy load Voyage client — chỉ chạy lần đầu tiên gọi _get_client()
+    # Lazy load Voyage client: chỉ khởi tạo khi thật sự cần encode.
     # ------------------------------------------------------------------
 
     def _get_client(self):
         """
         Trả về Voyage client.
-        Nếu chưa tạo → khởi tạo lần đầu và lưu vào class variable.
-        Nếu đã có rồi → trả về ngay.
+        Nếu client chưa tồn tại thì khởi tạo một lần và lưu vào class variable.
         """
         if EmbeddingGenerator._client is None:
             try:
@@ -111,7 +110,7 @@ class EmbeddingGenerator:
 
     def _encode_batch(self, texts: list[str], input_type: str) -> list[list[float]]:
         """
-        Encode danh sách text thành vectors qua Voyage API, chia thành batch nhỏ.
+        Encode danh sách text thành vectors qua Voyage API theo batch nhỏ.
 
         Chia batch để tránh request quá lớn khi có nhiều chunks.
         Ví dụ: 300 texts, batch_size=32 → 10 lần encode.
@@ -130,7 +129,7 @@ class EmbeddingGenerator:
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]
 
-            # Retry theo exponential backoff để giảm fail do lỗi tạm thời API/network.
+            # Retry theo exponential backoff để giảm lỗi tạm thời từ API/network.
             for attempt in range(1, self.max_retries + 1):
                 try:
                     response = client.embed(
@@ -163,16 +162,16 @@ class EmbeddingGenerator:
         """
         Tạo embedding cho danh sách LegalChunk (văn bản luật).
 
-        Chỉ embed child chunks (is_parent=False) vì:
-          - Child dùng để TÌM KIẾM → cần vector
-          - Parent dùng để TRẢ VỀ context → chỉ cần text, không cần vector
+                Chỉ embed child chunks (is_parent=False) vì:
+                    - Child phục vụ tìm kiếm nên cần vector thật.
+                    - Parent chỉ dùng để trả context nên không cần vector.
 
         Args:
             chunks: list[LegalChunk] — gồm cả parent lẫn child
 
         Returns:
-            list[list[float]] — vector cho TỪNG chunk (kể cả parent).
-            Parent chunk trả về vector zero [0.0, 0.0, ...] — không dùng để search.
+            list[list[float]] — vector cho từng chunk, giữ nguyên thứ tự đầu vào.
+            Parent chunk nhận vector zero [0.0, 0.0, ...] để không tham gia search.
 
         Ví dụ:
             chunks = [parent_chunk, child1, child2]
@@ -185,7 +184,7 @@ class EmbeddingGenerator:
 
         for chunk in chunks:
             if chunk.is_parent:
-                # Parent không cần embed — trả về vector zero làm placeholder
+                # Parent không cần embed; dùng vector zero làm placeholder.
                 all_vectors.append([0.0] * self.dimension)
             else:
                 all_vectors.extend(self._encode_batch([chunk.text], input_type="document"))
@@ -194,10 +193,10 @@ class EmbeddingGenerator:
 
     def embed_chunks_batched(self, chunks: list[LegalChunk]) -> list[list[float]]:
         """
-        Phiên bản tối ưu hơn của embed_chunks() — gom tất cả child chunks
-        vào một lần gọi _encode_batch() thay vì gọi từng cái một.
+        Phiên bản tối ưu hơn của embed_chunks(): gom toàn bộ child chunks
+        vào một lần gọi _encode_batch() thay vì encode từng chunk riêng lẻ.
 
-        Nhanh hơn đáng kể khi có nhiều chunks vì tận dụng song song hóa GPU.
+        Cách này giảm số request API và thường nhanh hơn khi có nhiều chunks.
 
         Args:
             chunks: list[LegalChunk]
@@ -205,7 +204,7 @@ class EmbeddingGenerator:
         Returns:
             list[list[float]] — vector cho từng chunk (thứ tự tương ứng 1-1).
         """
-        # Tách child chunks và lưu vị trí index của chúng
+        # Tách child chunks và lưu lại vị trí để ghép vector đúng thứ tự.
         child_indices: list[int] = []
         child_texts:   list[str] = []
 
@@ -214,10 +213,10 @@ class EmbeddingGenerator:
                 child_indices.append(i)
                 child_texts.append(chunk.text)
 
-        # Encode tất cả child trong 1 lần gọi batch
+        # Encode toàn bộ child chunks trong một batch.
         child_vectors = self._encode_batch(child_texts, input_type="document") if child_texts else []
 
-        # Ghép lại: parent → zero vector, child → vector thật
+        # Ghép lại: parent giữ vector zero, child nhận vector thật.
         result = [[0.0] * self.dimension for _ in chunks]
         for idx, vec in zip(child_indices, child_vectors):
             result[idx] = vec
@@ -226,7 +225,7 @@ class EmbeddingGenerator:
 
     def embed_query(self, query: str) -> list[float]:
         """
-        Tạo embedding cho câu hỏi của user.
+        Tạo embedding cho câu hỏi của người dùng.
 
         Args:
             query: Câu hỏi của user.
@@ -240,5 +239,5 @@ class EmbeddingGenerator:
             # q_vec: [0.023, -0.041, ...] — 1024 số
         """
         vectors = self._encode_batch([query.strip()], input_type="query")
-        return vectors[0]  # Trả về vector đơn (không phải list of lists)
+        return vectors[0]  # Trả về 1 vector, không bọc thêm list ngoài.
 

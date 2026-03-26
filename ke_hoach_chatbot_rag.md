@@ -275,6 +275,14 @@ chunk_metadata = {
 
 #### 4.2.1 Query Classification
 
+> [!TIP]
+> Trước khi đi vào retrieval, nên có một lớp **Query Safety / Intent Guard** để phân loại câu hỏi thành:
+> - `safe` = câu hỏi hợp lệ, có thể đưa vào pipeline RAG
+> - `unsafe` = prompt injection, nội dung độc hại, hoặc câu hỏi ngoài phạm vi
+>
+> Với câu hỏi tiếng Anh, có thể dùng mô hình **Guardian** để đánh giá nhanh.
+> Nếu Guardian không hỗ trợ tiếng Việt tốt, dùng thêm một LLM đa ngôn ngữ làm lớp fallback để xác nhận `safe/unsafe`.
+
 ```python
 # Phân loại câu hỏi để chọn chiến lược retrieval phù hợp
 QUERY_TYPES = {
@@ -298,11 +306,31 @@ QUERY_TYPES = {
         "strategy": "hybrid + agentic",
         "top_k": 10
     },
+    "safe": {
+        # Câu hỏi hợp lệ, không chứa prompt injection
+        "strategy": "continue_pipeline",
+        "next_step": "rewrite + retrieve"
+    },
+    "unsafe": {
+        # Prompt injection, jailbreak, nội dung độc hại, hoặc ngoài phạm vi
+        "strategy": "reject_or_refuse",
+        "response": "Xin lỗi, tôi chỉ hỗ trợ câu hỏi an toàn và hợp lệ về Luật..."
+    },
     "out_of_scope": {
         # "Thời tiết hôm nay thế nào?"
-        "strategy": "reject",
+        "strategy": "reject_or_refuse",
         "response": "Xin lỗi, tôi chỉ hỗ trợ câu hỏi về Luật..."
     }
+}
+
+QUERY_GUARDRAILS_CONFIG = {
+    "enabled": True,
+    "guardian_model": "guardian-...",   # mô hình Guardian dành cho câu hỏi tiếng Anh
+    "guardian_languages": ["en"],
+    "fallback_llm_model": "Qwen2.5-7B-Instruct",  # hoặc LLM đa ngôn ngữ khác nếu Guardian yếu với tiếng Việt
+    "fallback_languages": ["vi", "en"],
+    "output_labels": ["safe", "unsafe", "out_of_scope"],
+    "unsafe_triggers": ["prompt injection", "jailbreak", "system prompt override", "data exfiltration"],
 }
 ```
 
@@ -435,6 +463,41 @@ graph TB
 ### 5.2 Chi tiết từng lớp
 
 #### Layer 1: Query Guardrails
+**Mục tiêu:** quyết định câu hỏi có được đưa vào pipeline RAG hay bị từ chối trước khi retrieval.
+
+**Phương pháp đề xuất:**
+- Với câu hỏi **tiếng Anh**: dùng mô hình **Guardian** để phân loại `safe / unsafe / out_of_scope`.
+- Với câu hỏi **tiếng Việt**: dùng thêm một **LLM đa ngôn ngữ** làm fallback nếu Guardian không đánh giá tốt tiếng Việt.
+- Nếu hai model mâu thuẫn nhau: ưu tiên kết quả `unsafe` để bảo thủ hơn.
+- Nếu không chắc chắn: chuyển sang `unsafe` hoặc `out_of_scope` thay vì để câu hỏi đi tiếp.
+
+```python
+def check_query_safety(query: str, language: str) -> str:
+        """
+        Trả về một trong các nhãn:
+            - safe
+            - unsafe
+            - out_of_scope
+
+        Luồng xử lý:
+            1. Nếu ngôn ngữ là tiếng Anh -> gọi Guardian trước.
+            2. Nếu là tiếng Việt hoặc Guardian không hỗ trợ tốt -> gọi LLM fallback đa ngôn ngữ.
+            3. Nếu có dấu hiệu prompt injection / jailbreak / độc hại -> trả unsafe.
+            4. Nếu câu hỏi không liên quan luật -> trả out_of_scope.
+        """
+        pass
+```
+
+**Output khuyến nghị:**
+- `safe`: cho phép đi vào query rewriting + retrieval
+- `unsafe`: từ chối hoặc yêu cầu người dùng hỏi lại
+- `out_of_scope`: lịch sự từ chối vì ngoài phạm vi luật
+
+**Gợi ý implementation:**
+- Guardian xử lý tầng đầu cho English queries.
+- Fallback LLM đa ngôn ngữ xử lý tiếng Việt và các câu mà Guardian không tự tin.
+- Ghi log nhãn và confidence để theo dõi độ ổn định của lớp guardrails.
+
 ```python
 def check_query_scope(query: str) -> bool:
     """Kiểm tra câu hỏi có thuộc phạm vi luật không"""

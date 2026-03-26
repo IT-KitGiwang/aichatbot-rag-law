@@ -4,8 +4,8 @@ Legal Indexer — 4.1.4 trong kế hoạch.
 Lưu LegalChunk + vector embedding vào ChromaDB.
 
 Hai collection:
-  - legal_documents         : child chunks + vectors (dùng để SEARCH)
-  - legal_documents_parents : parent chunks text-only (dùng để lấy CONTEXT)
+    - legal_documents         : child chunks + vectors để search
+    - legal_documents_parents : parent chunks text-only để lấy thêm context
 """
 
 from __future__ import annotations
@@ -36,13 +36,13 @@ class LegalIndexer:
     Hai collection:
       1. legal_documents
          - Chứa: child chunks (is_parent=False)
-         - Có: vector embedding → dùng để similarity search
-         - Không có parent chunks → tránh nhiễu kết quả search
+            - Có vector embedding để similarity search
+            - Không chứa parent chunks để tránh làm nhiễu kết quả
 
       2. legal_documents_parents
          - Chứa: parent chunks (is_parent=True)
-         - Không cần vector thật (dùng zero vector làm placeholder)
-         - Truy vấn bằng chunk_id khi cần mở rộng context
+            - Không cần vector thật, chỉ giữ text gốc của Điều
+            - Lấy theo chunk_id khi cần mở rộng ngữ cảnh trả lời
 
     Cách dùng:
         indexer = LegalIndexer()
@@ -78,24 +78,24 @@ class LegalIndexer:
         """
         self.embedding_dim = embedding_dim
 
-        # Tạo thư mục persist nếu chưa có
+        # Tạo thư mục persist nếu chưa tồn tại.
         Path(persist_dir).mkdir(parents=True, exist_ok=True)
 
-        # Client lưu xuống disk (PersistentClient)
-        # anonymized_telemetry=False: tắt gửi dữ liệu về ChromaDB
+        # PersistentClient lưu DB xuống disk.
+        # anonymized_telemetry=False: không gửi telemetry ẩn danh về ChromaDB.
         self._client = chromadb.PersistentClient(
             path=persist_dir,
             settings=ChromaSettings(anonymized_telemetry=False),
         )
 
-        # Collection 1: child chunks + vectors (dùng để SEARCH)
-        # hnsw:space=cosine: metric khoảng cách cho embedding đã normalize
+        # Collection chính: child chunks + vectors để search.
+        # hnsw:space=cosine: dùng cosine distance cho embedding đã normalize.
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
         )
 
-        # Collection 2: parent chunks text-only (dùng để lấy CONTEXT)
+        # Collection phụ: parent chunks text-only để lấy context theo ID.
         parent_collection_name = collection_name + self._PARENT_SUFFIX
         self._parent_collection = self._client.get_or_create_collection(
             name=parent_collection_name,
@@ -145,7 +145,7 @@ class LegalIndexer:
                 f"chunks={len(chunks)}, vectors={len(vectors)}"
             )
 
-        # Tách riêng child và parent
+        # Tách riêng child và parent để upsert vào hai collection khác nhau.
         child_ids, child_texts, child_vectors, child_metas = [], [], [], []
         parent_ids, parent_texts, parent_metas = [], [], []
 
@@ -157,10 +157,10 @@ class LegalIndexer:
             else:
                 child_ids.append(chunk.chunk_id)
                 child_texts.append(chunk.text)
-                child_vectors.append(vec)           # vector thật
+                child_vectors.append(vec)           # vector thật của child chunk
                 child_metas.append(chunk.to_chroma_metadata())
 
-        # Upsert children vào collection chính
+            # Upsert child chunks vào collection chính.
         if child_ids:
             self._upsert_batch(
                 collection=self._collection,
@@ -171,7 +171,7 @@ class LegalIndexer:
             )
             print(f"[LegalIndexer] Đã index {len(child_ids)} child chunks")
 
-        # Upsert parents vào collection phụ
+        # Upsert parent chunks vào collection phụ.
         if parent_ids:
             self._upsert_batch(
                 collection=self._parent_collection,
@@ -274,8 +274,8 @@ class LegalIndexer:
 
         raw = self._collection.query(**kwargs)
 
-        # raw trả về dạng list-of-lists vì hỗ trợ multi-query
-        # Ta chỉ gửi 1 query nên lấy index [0]
+        # Chroma trả về list-of-lists vì hỗ trợ multi-query.
+        # Ở đây chỉ gửi 1 query nên lấy phần tử [0].
         ids        = raw["ids"][0]
         documents  = raw["documents"][0]
         metadatas  = raw["metadatas"][0]
@@ -336,9 +336,9 @@ class LegalIndexer:
 
     def get_parent(self, parent_chunk_id: str) -> Optional[dict]:
         """
-        Lấy nội dung đầy đủ của parent chunk (toàn bộ Điều) theo ID.
+        Lấy toàn bộ parent chunk (tức toàn bộ Điều) theo ID.
 
-        Dùng sau query() khi muốn mở rộng context:
+        Dùng sau query() khi cần mở rộng ngữ cảnh cho một child chunk:
             child = results[0]
             if child["metadata"].get("parent_chunk_id"):
                 parent = indexer.get_parent(child["metadata"]["parent_chunk_id"])
@@ -370,8 +370,8 @@ class LegalIndexer:
         Xóa toàn bộ chunks (child + parent) thuộc về một bộ luật.
 
         Hữu ích khi cần re-index một văn bản luật đã thay đổi.
-        ChromaDB không hỗ trợ xóa theo filter trực tiếp — phải get() IDs
-        trước rồi mới delete(ids=[...]).
+        ChromaDB không hỗ trợ delete theo filter trực tiếp, nên phải lấy IDs
+        trước rồi mới gọi delete(ids=[...]).
 
         Args:
             law_name: Tên bộ luật đúng như lúc index.
@@ -383,17 +383,17 @@ class LegalIndexer:
         where_filter = {"law_name": law_name}
         total_deleted = 0
 
-        # Xóa child chunks
+        # Xóa child chunks trước.
         child_raw = self._collection.get(
             where=where_filter,
-            include=[],      # chỉ cần IDs, không cần nội dung
+            include=[],      # Chỉ cần IDs, không cần documents/metadatas.
         )
         if child_raw["ids"]:
             self._collection.delete(ids=child_raw["ids"])
             total_deleted += len(child_raw["ids"])
             print(f"[LegalIndexer] Xóa {len(child_raw['ids'])} child chunks của '{law_name}'")
 
-        # Xóa parent chunks
+        # Xóa parent chunks sau.
         parent_raw = self._parent_collection.get(
             where=where_filter,
             include=[],

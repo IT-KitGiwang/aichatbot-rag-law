@@ -101,7 +101,7 @@ def is_noise(line: str) -> bool:
         is_noise("- 12 -")        → True
         is_noise("Điều 15.")      → False
     """
-    return any(p.search(line) for p in _NOISE_PATTERNS) # nếu khớp bất kỳ pattern nào → là noise (true), ngược lại → không phải noise (false)
+    return any(p.search(line) for p in _NOISE_PATTERNS)  # Khớp bất kỳ pattern nào → coi là noise.
 
 
 def _strip_invisible_chars(line: str) -> str:
@@ -249,14 +249,14 @@ class LegalPDFProcessor:
         lines: list[tuple[str, int]] = []
 
         doc = fitz.open(str(pdf_path))
-        try: # đảm bảo file PDF được đóng sau khi đọc, dù có lỗi xảy ra
-            for page_num, page in enumerate(doc, start=1): # enumerate có nghĩa là vừa lấy index (số trang) vừa lấy nội dung trang
-                # "text" mode: trả về plain text, giữ nguyên layout dòng
-                raw_text = page.get_text("text") # xún dòng đúng chỗ mà PDF hiển thị
+        try:  # Đảm bảo file PDF luôn được đóng, kể cả khi đọc lỗi.
+            for page_num, page in enumerate(doc, start=1):  # Lấy đồng thời số trang và nội dung.
+                # "text" mode giữ layout dòng theo văn bản gốc của PDF.
+                raw_text = page.get_text("text")
                 for line in raw_text.splitlines():
                     lines.append((line, page_num))
         finally:
-            doc.close()  # đảm bảo đóng file dù có lỗi
+            doc.close()
 
         return lines 
 
@@ -281,16 +281,16 @@ class LegalPDFProcessor:
         clean: list[tuple[str, int]] = []
 
         for line, page in raw_lines:
-            # Giữ nội dung hiển thị để bảo toàn dữ liệu.
+            # Giữ nguyên nội dung hiển thị để không làm mất dấu câu hoặc từ.
             stripped = _strip_invisible_chars(line).strip()
-            # Chuẩn hóa riêng cho bước regex matching.
+            # Chuẩn hóa chỉ để so khớp regex, không ảnh hưởng text lưu lại.
             match_line = _normalize_line_for_match(stripped)
 
-            # Bỏ qua dòng trống
+            # Bỏ qua dòng trống.
             if not stripped:
                 continue
 
-            # Bỏ qua dòng khớp noise pattern
+            # Bỏ qua dòng rơi vào nhóm noise (số trang, header/footer, metadata).
             if is_noise(match_line):
                 continue
 
@@ -310,15 +310,15 @@ class LegalPDFProcessor:
 
         Thuật toán "duyệt + flush":
           - Duy trì buffer (current_lines) tích lũy dòng của block hiện tại.
-          - Khi gặp dòng bắt đầu block mới → flush buffer thành RawBlock,
-            cập nhật GPS (current_struct), bắt đầu buffer mới.
-          - Body chỉ append vào buffer, không flush.
+                    - Khi gặp dòng mở block mới → flush buffer thành RawBlock,
+                        cập nhật structure hiện tại, rồi bắt đầu buffer mới.
+                    - Dòng body chỉ append vào buffer, không tạo block riêng.
 
         Quy tắc cập nhật struct khi flush:
           - Chương mới  → reset section, article
           - Mục mới     → reset article (giữ chapter)
           - Điều mới    → chỉ cập nhật article (giữ chapter, section)
-          - Khoản/Điểm  → không thay đổi struct (vẫn thuộc Điều hiện tại)
+          - Khoản/Điểm  → không thay đổi struct, vẫn thuộc Điều hiện tại.
         """
         blocks: list[RawBlock] = []
         current_struct = LegalStructure()
@@ -327,7 +327,7 @@ class LegalPDFProcessor:
         current_page: int = 1
 
         def flush():
-            """Xuất buffer thành RawBlock và reset buffer."""
+            """Đóng buffer hiện tại thành RawBlock rồi reset buffer."""
             nonlocal current_lines, current_type, current_page
             text = " ".join(current_lines).strip()
             if text:
@@ -335,7 +335,7 @@ class LegalPDFProcessor:
                     text=text,
                     page=current_page,
                     block_type=current_type,
-                    structure=current_struct.clone(),  # ← clone để độc lập
+                    structure=current_struct.clone(),  # Clone để mỗi RawBlock giữ state riêng.
                 ))
             current_lines = []
 
@@ -386,19 +386,17 @@ class LegalPDFProcessor:
                 current_lines = [line]
 
             elif line_type in ("clause", "point"):
-                # Flush block khoản/điểm trước đó (nếu có)
-                # nhưng KHÔNG thay đổi struct — vẫn thuộc Điều hiện tại
+                # Đóng block Khoản/Điểm trước đó nếu có, nhưng không đổi structure.
                 flush()
                 current_type = line_type
                 current_page = page
                 current_lines = [line]
 
             else:
-                # "body" — chỉ append, không flush
-                # Dòng body đầu tiên sau chapter/section thường là tiêu đề
+                # body: chỉ append vào buffer, không flush ngay.
+                # Dòng body đầu tiên sau chapter/section thường là tiêu đề của chương/mục.
                 if current_type == "chapter" and not current_struct.chapter_title:
-                    # Nếu dòng đầu body trùng chính tiêu đề chương,
-                    # bỏ qua để tránh lặp "Chương I\nChương I".
+                    # Nếu dòng body đầu tiên lặp lại đúng tên chương thì bỏ qua để tránh trùng.
                     if line == (current_struct.chapter or ""):
                         continue
                     current_struct.chapter_title = line
@@ -411,12 +409,12 @@ class LegalPDFProcessor:
                     current_lines.append(line)
                     continue
 
-                # Chỉ bỏ trùng tuyệt đối liên tiếp trong cùng block.
+                # Chỉ bỏ trùng tuyệt đối khi 2 dòng giống nhau nằm sát nhau trong cùng block.
                 if current_lines and line == current_lines[-1]:
                     continue
                 current_lines.append(line)
 
-        flush()  # flush block cuối cùng
+        flush()  # Đóng luôn block cuối cùng còn trong buffer.
         return blocks
 
 
@@ -534,16 +532,16 @@ class LegalPDFProcessor:
         if not pdf_path.exists():
             raise FileNotFoundError(f"Không tìm thấy file PDF: {pdf_path}")
 
-        # Tự suy luận law_name từ tên file nếu không được cung cấp
+        # Nếu không truyền law_name thì suy ra từ tên file.
         if not law_name:
             law_name = self.extract_metadata_from_filename(pdf_path)["law_name"]
 
-        # Bước 1 → 2 → 3
+        # Thực hiện tuần tự: extract → lọc noise → nhận dạng cấu trúc.
         raw_lines   = self._extract_lines(pdf_path)
         clean_lines = self._filter_noise(raw_lines)
         blocks      = self._identify_structure(clean_lines)
 
-        # Gắn thông tin văn bản luật vào từng block
+        # Gắn metadata văn bản luật vào mọi block để chunker/indexer dùng tiếp.
         for block in blocks:
             block.law_name = law_name
             block.law_number = law_number
@@ -558,15 +556,13 @@ class LegalPDFProcessor:
         Ví dụ:
             "luat_hon_nhan_2014.pdf" → {"law_name": "Luat Hon Nhan 2014"}
         """
-        # Trích xuất số cuối cùng trong tên file để coi như năm (VD: 2014)
+        # Chuẩn hóa stem của file thành nhãn đọc được cho law_name mặc định.
         name = pdf_path.stem.replace("_", " ").title()
         
-        # Thử tìm năm trong chuỗi
+        # Nếu trong tên file có năm thì giữ lại để hỗ trợ suy luận sơ bộ.
         year_match = re.search(r'\b(19\d{2}|20\d{2})\b', name)
         year = year_match.group(1) if year_match else ""
         
-        # Hiện tại module này chỉ hỗ trợ suy luận tên luật từ filename.
-        # Các metadata khác (số hiệu, ngày hiệu lực) không thể nội suy chính xác
-        # từ filename nên sẽ được giữ cố định rỗng, người dùng cần truyền vào khi gọi.
+        # Chỉ suy luận được law_name từ filename; các metadata khác phải truyền vào rõ ràng.
         return {"law_name": name, "law_number": "", "effective_date": ""}
 

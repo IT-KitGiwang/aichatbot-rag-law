@@ -1,6 +1,6 @@
 # src/ingestion/__init__.py
 """
-Package ingestion — Pipeline nạp văn bản luật vào ChromaDB.
+Package ingestion — Tập hợp các thành phần của ingestion pipeline.
 
 Luồng xử lý:
     PDF → LegalPDFProcessor → LegalChunker → EmbeddingGenerator → LegalIndexer
@@ -35,17 +35,17 @@ from src.ingestion.run_ingestion import (
 )
 
 __all__ = [
-    # pdf_processor
+    # PDF parsing / structure extraction
     "LegalPDFProcessor",
     "LegalStructure",
     "RawBlock",
-    # legal_chunker
+    # Chunking
     "LegalChunker",
     "LegalChunk",
-    # embedder
+    # Embedding
     "EmbeddingGenerator",
-    # indexer
+    # Storage / retrieval index
     "LegalIndexer",
-    # run_ingestion
+    # Orchestrator
     "IngestionPipeline",
 ]
